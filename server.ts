@@ -125,11 +125,12 @@ Primary Objective:
   - AFTER confirmation, use the 'saveBookingTool'.
   - Acknowledge: "धन्यवाद। आपकी बुकिंग कन्फर्म हो गई है। जल्द ही हमारा टेक्नीशियन आपसे संपर्क करेगा।"
   - Closing: "अपना कीमती समय देने के लिए बहुत-बहुत धन्यवाद। आपका दिन शुभ हो। अब मैं इस call को disconnect कर रही हूँ।" (or "Thank you for your valuable time. Have a good day. Now we are disconnecting this call." in English)
-  - The system's voice detector will monitor for this disconnection phrase and end the call automatically. Do not add anything else after this phrase.
+  - CRITICAL: Immediately after saying the disconnection phrase, you MUST call the 'endCallTool' to hang up the call. Do not wait for the user to reply.
 
 - Refusal / Not Interested: "कोई बात नहीं सर। आप कृपया हमारा नंबर 'Sofiyan Home Service' के नाम से सेव कर लें और हमारी वेबसाइट sofiyan.com ज़रूर विजिट करें, ताकि फ्यूचर में कभी भी घर की सर्विस की ज़रूरत हो तो हम आपकी मदद कर सकें। अपना समय देने के लिए धन्यवाद। आपका दिन शुभ हो। अब मैं इस call को disconnect कर रही हूँ।" (or "Now we are disconnecting this call." in English)
+  - CRITICAL: Immediately after saying the disconnection phrase, you MUST call the 'endCallTool' to hang up the call.
 
-- End Call constraint: The call MUST NOT end in the middle of a conversation. When the conversation naturally concludes, or if the user asks to hang up, you MUST use the exact phrase "अब मैं इस call को disconnect कर रही हूँ" (or "Now we are disconnecting this call") to terminate the session. Do not wait for the user to say anything else.
+- End Call constraint: The call MUST NOT end in the middle of a conversation. When the conversation naturally concludes, or if the user asks to hang up, you MUST use the exact phrase "अब मैं इस call को disconnect कर रही हूँ" (or "Now we are disconnecting this call") AND immediately call the 'endCallTool' to terminate the session. Do not wait for the user to say anything else.
 
 - Services Database:
   - AC: Split, Window, Cassette, Tower, Gas Charging, Install/Uninstall, Deep Cleaning, Water Leakage, PCB, Compressor, Fan, Not Cooling.
@@ -174,6 +175,7 @@ async function startServer() {
     const supabaseUrl = url.searchParams.get("supabaseUrl") || process.env.SUPABASE_URL || "https://vqbnzcknflwuhbiznuim.supabase.co";
     const supabaseKey = url.searchParams.get("supabaseKey") || process.env.SUPABASE_ANON_KEY || "sb_publishable_YKSbWVBxAltMjpIxGhNAIg_Ga8B9xST";
     const voiceName = url.searchParams.get("voice") || "Aoede";
+    const contactInfo = url.searchParams.get("contact") || "";
 
     try {
       const session = await ai.live.connect({
@@ -183,7 +185,7 @@ async function startServer() {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName } },
           },
-          systemInstruction: SYSTEM_INSTRUCTION,
+          systemInstruction: SYSTEM_INSTRUCTION + (contactInfo ? `\n\nCRITICAL: You are connected to the customer: ${contactInfo}. The phone is dialing. Wait for the customer to speak (e.g., saying 'Hello') before you greet them and initiate the conversation.` : ""),
           tools: [{
             functionDeclarations: [
               {
@@ -201,6 +203,17 @@ async function startServer() {
                     serviceTiming: { type: Type.STRING }
                   },
                   required: ["name", "contactNumber"]
+                }
+              },
+              {
+                name: "endCallTool",
+                description: "Ends the active call session. You MUST call this tool immediately after saying your final closing statement (e.g., 'Now we are disconnecting this call.') to hang up.",
+                parameters: {
+                  type: Type.OBJECT,
+                  properties: {
+                    reason: { type: Type.STRING, description: "The reason for ending the call" }
+                  },
+                  required: ["reason"]
                 }
               }
             ]
@@ -279,6 +292,20 @@ async function startServer() {
                       id: fc.id,
                       name: "saveBookingTool",
                       response: { result: resultStr }
+                    }]
+                  });
+                } else if (fc.name === "endCallTool") {
+                  console.log("AI called endCallTool:", fc.args);
+                  if (clientWs.readyState === WebSocket.OPEN) {
+                    clientWs.send(JSON.stringify({ type: "transcription", role: "SYSTEM", text: `[AI ended the call: ${fc.args.reason}]` }));
+                    clientWs.send(JSON.stringify({ type: "end_call" }));
+                  }
+                  
+                  session.sendToolResponse({
+                    functionResponses: [{
+                      id: fc.id,
+                      name: "endCallTool",
+                      response: { result: "SUCCESS" }
                     }]
                   });
                 }

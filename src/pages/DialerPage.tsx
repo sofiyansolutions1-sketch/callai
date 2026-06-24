@@ -62,6 +62,8 @@ export default function DialerPage() {
   const aiVoiceBufferRef = useRef<string>("");
   const hasAiSpokenOnceRef = useRef(false);
   const silenceTimerRef = useRef<any>(null);
+  const disconnectTimerRef = useRef<any>(null);
+  const noAnswerTimerRef = useRef<any>(null);
 
   const recognitionRef = useRef<any>(null);
 
@@ -128,6 +130,8 @@ export default function DialerPage() {
       clearInterval(checkSilenceIntervalRef.current);
       if (callTimeoutRef.current) clearTimeout(callTimeoutRef.current);
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+      if (noAnswerTimerRef.current) clearTimeout(noAnswerTimerRef.current);
       setStatus("idle");
       setMuted(false);
       setAiSpeaking(false);
@@ -147,8 +151,12 @@ export default function DialerPage() {
           setTimeout(() => {
              startCallInternal(queueRef.current[nextIdx]);
           }, 3000);
-        } else if (triggerNext) {
-          addLog("SYSTEM", `Bulk calling queue finished.`);
+        } else {
+          if (triggerNext) {
+             addLog("SYSTEM", `Bulk calling queue finished.`);
+          } else {
+             addLog("SYSTEM", `Bulk calling campaign manually aborted.`);
+          }
           setBulkSessionActive(false);
         }
       } else {
@@ -185,10 +193,16 @@ export default function DialerPage() {
          await fireWebhook("init", contactInfo);
       }
 
+      if (noAnswerTimerRef.current) clearTimeout(noAnswerTimerRef.current);
+      noAnswerTimerRef.current = setTimeout(() => {
+          addLog("SYSTEM", "Call ended because it was not answered within 45 seconds.");
+          stopCall(true);
+      }, 45000);
+
       const supabaseUrl = localStorage.getItem("SUPABASE_URL") || "https://vqbnzcknflwuhbiznuim.supabase.co";
       const supabaseKey = localStorage.getItem("SUPABASE_ANON_KEY") || "sb_publishable_YKSbWVBxAltMjpIxGhNAIg_Ga8B9xST";
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//${window.location.host}/live?voice=${voiceName}&supabaseUrl=${encodeURIComponent(supabaseUrl)}&supabaseKey=${encodeURIComponent(supabaseKey)}`;
+      const wsUrl = `${protocol}//${window.location.host}/live?voice=${voiceName}&supabaseUrl=${encodeURIComponent(supabaseUrl)}&supabaseKey=${encodeURIComponent(supabaseKey)}&contact=${encodeURIComponent(contactInfo || "")}`;
       
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
@@ -206,6 +220,33 @@ export default function DialerPage() {
          
          const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
          streamRef.current = stream;
+
+         // Setup Speech Recognition for User Transcript
+         const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+         if (SpeechRecognition) {
+            const recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            recognition.lang = 'hi-IN'; // Defaulting to Hindi as the bot speaks Hindi mostly
+            
+            recognition.onresult = (event: any) => {
+               for (let i = event.resultIndex; i < event.results.length; ++i) {
+                  if (event.results[i].isFinal) {
+                     const text = event.results[i][0].transcript;
+                     addLog("USER", text);
+                  }
+               }
+            };
+            
+            recognition.onerror = (e: any) => console.log("Speech recognition error:", e);
+            
+            try {
+               recognition.start();
+               recognitionRef.current = recognition;
+            } catch(e) {
+               console.error("Failed to start speech recognition", e);
+            }
+         }
 
          const source = inputCtx.createMediaStreamSource(stream);
          const processor = inputCtx.createScriptProcessor(4096, 1, 1);
@@ -232,6 +273,11 @@ export default function DialerPage() {
          checkSilenceIntervalRef.current = setInterval(() => {
             if (userVolRef.current < 0.02) {
                setUserSpeaking(false);
+            } else {
+               if (noAnswerTimerRef.current) {
+                   clearTimeout(noAnswerTimerRef.current);
+                   noAnswerTimerRef.current = null;
+               }
             }
             
             // If anyone is speaking (user or AI audio playing), reset the inactivity timer
@@ -251,6 +297,10 @@ export default function DialerPage() {
         }
         if (msg.audio) {
             hasAiSpokenOnceRef.current = true;
+            if (noAnswerTimerRef.current) {
+                clearTimeout(noAnswerTimerRef.current);
+                noAnswerTimerRef.current = null;
+            }
             resetSilenceTimer();
             setAiSpeaking(true);
             playAudioChunk(outputCtx, msg.audio);
@@ -300,7 +350,8 @@ export default function DialerPage() {
                  // Clear buffer so we don't trigger repeatedly
                  aiVoiceBufferRef.current = "";
                  
-                 setTimeout(() => stopCall(true), 5000);
+                 if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+                 disconnectTimerRef.current = setTimeout(() => stopCall(true), 5000);
               }
            }
         }
@@ -331,14 +382,15 @@ export default function DialerPage() {
            localStorage.setItem("LOCAL_BOOKINGS", JSON.stringify([newBooking, ...existing]));
         }
         if (msg.type === "end_call") {
-           addLog("SYSTEM", "The agent has ended the call securely. Terminating session in 5 seconds...");
-           setTimeout(() => stopCall(true), 5000);
+           addLog("SYSTEM", "The agent has ended the call securely. Terminating session in 3 seconds...");
+           if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+           disconnectTimerRef.current = setTimeout(() => stopCall(true), 3000);
         }
       };
 
       ws.onerror = () => {
          setError("WebSocket connection error. Please try again.");
-         stopCall(false);
+         stopCall(true);
       };
       
       ws.onclose = () => {
