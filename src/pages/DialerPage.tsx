@@ -79,7 +79,7 @@ export default function DialerPage() {
   };
 
   const fireWebhook = async (type: "init" | "term", contact: string) => {
-     if (localStorage.getItem("ENABLE_WEBHOOKS") !== "true") return;
+     if (localStorage.getItem("ENABLE_WEBHOOKS") === "false") return;
      const rawUrl = type === "init" ? localStorage.getItem("INIT_WEBHOOK_URL") : localStorage.getItem("TERM_WEBHOOK_URL");
      if (!rawUrl) return;
      
@@ -191,6 +191,7 @@ export default function DialerPage() {
          currentContactRef.current = contactInfo;
          addLog("SYSTEM", `Starting automated call trigger to: ${contactInfo}`);
          await fireWebhook("init", contactInfo);
+         fetch(`https://trigger.macrodroid.com/eaa342d0-a4df-4ee3-9850-cfbbc79248e3/call?${contactInfo}`, { mode: 'no-cors' }).catch(err => console.error("Webhook failed", err));
       }
 
       if (noAnswerTimerRef.current) clearTimeout(noAnswerTimerRef.current);

@@ -15,7 +15,7 @@ export default function SettingsPage() {
     setSupabaseUrl(localStorage.getItem("SUPABASE_URL") || "https://vqbnzcknflwuhbiznuim.supabase.co");
     setSupabaseKey(localStorage.getItem("SUPABASE_ANON_KEY") || "sb_publishable_YKSbWVBxAltMjpIxGhNAIg_Ga8B9xST");
     setVoiceName(localStorage.getItem("GEMINI_VOICE_NAME") || "Aoede");
-    setEnableWebhooks(localStorage.getItem("ENABLE_WEBHOOKS") === "true");
+    setEnableWebhooks(localStorage.getItem("ENABLE_WEBHOOKS") !== "false");
     setInitWebhook(localStorage.getItem("INIT_WEBHOOK_URL") || "");
     setTermWebhook(localStorage.getItem("TERM_WEBHOOK_URL") || "");
   }, []);
