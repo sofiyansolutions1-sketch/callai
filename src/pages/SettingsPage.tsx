@@ -10,7 +10,6 @@ export default function SettingsPage() {
   const [enableWebhooks, setEnableWebhooks] = useState(false);
   const [initWebhook, setInitWebhook] = useState("");
   const [termWebhook, setTermWebhook] = useState("");
-  const [inboundWebhook, setInboundWebhook] = useState("");
 
   useEffect(() => {
     setSupabaseUrl(localStorage.getItem("SUPABASE_URL") || "https://vqbnzcknflwuhbiznuim.supabase.co");
@@ -19,7 +18,6 @@ export default function SettingsPage() {
     setEnableWebhooks(localStorage.getItem("ENABLE_WEBHOOKS") === "true");
     setInitWebhook(localStorage.getItem("INIT_WEBHOOK_URL") || "");
     setTermWebhook(localStorage.getItem("TERM_WEBHOOK_URL") || "");
-    setInboundWebhook(localStorage.getItem("INBOUND_WEBHOOK_URL") || "");
   }, []);
 
   const handleSave = () => {
@@ -29,7 +27,6 @@ export default function SettingsPage() {
     localStorage.setItem("ENABLE_WEBHOOKS", enableWebhooks.toString());
     localStorage.setItem("INIT_WEBHOOK_URL", initWebhook);
     localStorage.setItem("TERM_WEBHOOK_URL", termWebhook);
-    localStorage.setItem("INBOUND_WEBHOOK_URL", inboundWebhook);
     
     setSaveStatus("Settings saved successfully!");
     setTimeout(() => setSaveStatus(""), 3000);
@@ -92,17 +89,6 @@ export default function SettingsPage() {
                   className="w-full px-4 py-3 bg-slate-950/50 border border-slate-800 rounded-xl focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 text-slate-100 placeholder-slate-600 transition-all font-mono text-sm"
                 />
                 <p className="text-xs text-slate-500 mt-2">Triggered after the AI concludes the call (via endCallTool).</p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">Inbound Call Webhook URL</label>
-                <input
-                  type="url"
-                  placeholder="https://api.yourbackend.com/webhook/inbound"
-                  value={inboundWebhook}
-                  onChange={(e) => setInboundWebhook(e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-950/50 border border-slate-800 rounded-xl focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 text-slate-100 placeholder-slate-600 transition-all font-mono text-sm"
-                />
-                <p className="text-xs text-slate-500 mt-2">Triggered when an incoming call is received. The AI agent will automatically activate to speak with the customer.</p>
               </div>
             </div>
           )}

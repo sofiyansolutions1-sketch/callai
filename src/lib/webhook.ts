@@ -17,7 +17,7 @@ export const triggerWebhook = async (url: string) => {
   try {
     await fetch(url, {
       mode: "no-cors",
-      method: "POST",
+      method: "GET",
       keepalive: true,
     });
   } catch (err) {

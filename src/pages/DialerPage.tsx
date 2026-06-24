@@ -55,8 +55,15 @@ export default function DialerPage() {
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const currentContactRef = useRef<string | null>(null);
   const nextStartTimeRef = useRef(0);
+  const callStartTimeRef = useRef(0);
   const userVolRef = useRef(0);
   const checkSilenceIntervalRef = useRef<any>(null);
+  const callTimeoutRef = useRef<any>(null);
+  const aiVoiceBufferRef = useRef<string>("");
+  const hasAiSpokenOnceRef = useRef(false);
+  const silenceTimerRef = useRef<any>(null);
+
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     return () => {
@@ -85,69 +92,92 @@ export default function DialerPage() {
   };
 
   const stopCall = async (triggerNext = false) => {
-    if (!wsRef.current && !streamRef.current && !outputAudioCtxRef.current) {
-        return; // Already stopped
-    }
-    
-    if (wsRef.current) {
-       wsRef.current.close();
-       wsRef.current = null;
-    }
-    if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-        streamRef.current = null;
-    }
-    if (processorRef.current) {
-        processorRef.current.disconnect();
-        processorRef.current = null;
-    }
-    if (inputAudioCtxRef.current) {
-        inputAudioCtxRef.current.close();
-        inputAudioCtxRef.current = null;
-    }
-    if (outputAudioCtxRef.current) {
-        outputAudioCtxRef.current.close();
-        outputAudioCtxRef.current = null;
-    }
-    activeSourcesRef.current.forEach(s => {
-       try { s.stop(); } catch(e){}
-    });
-    activeSourcesRef.current = [];
-    clearInterval(checkSilenceIntervalRef.current);
-    setStatus("idle");
-    setMuted(false);
-    setAiSpeaking(false);
-    setUserSpeaking(false);
-
-    if (currentContactRef.current) {
-       await fireWebhook("term", currentContactRef.current);
-       currentContactRef.current = null;
-    }
-
-    if (bulkSessionActiveRef.current && currentQueueIndexRef.current >= 0 && currentQueueIndexRef.current < queueRef.current.length) {
-      if (triggerNext && currentQueueIndexRef.current + 1 < queueRef.current.length) {
-        const nextIdx = currentQueueIndexRef.current + 1;
-        setCurrentQueueIndex(nextIdx);
-        addLog("SYSTEM", `Preparing to dial next contact: ${queueRef.current[nextIdx]} in 3 seconds...`);
-        setTimeout(() => {
-           startCallInternal(queueRef.current[nextIdx]);
-        }, 3000);
-      } else if (triggerNext) {
-        addLog("SYSTEM", `Bulk calling queue finished.`);
-        setBulkSessionActive(false);
+    try {
+      if (!wsRef.current && !streamRef.current && !outputAudioCtxRef.current) {
+          return; // Already stopped
       }
-    } else {
-       setBulkSessionActive(false);
+      
+      if (wsRef.current) {
+         wsRef.current.close();
+         wsRef.current = null;
+      }
+      if (streamRef.current) {
+          streamRef.current.getTracks().forEach(t => t.stop());
+          streamRef.current = null;
+      }
+      if (recognitionRef.current) {
+          try { recognitionRef.current.stop(); } catch(e){}
+          recognitionRef.current = null;
+      }
+      if (processorRef.current) {
+          try { processorRef.current.disconnect(); } catch(e){}
+          processorRef.current = null;
+      }
+      if (inputAudioCtxRef.current) {
+          try { inputAudioCtxRef.current.close(); } catch(e){}
+          inputAudioCtxRef.current = null;
+      }
+      if (outputAudioCtxRef.current) {
+          try { outputAudioCtxRef.current.close(); } catch(e){}
+          outputAudioCtxRef.current = null;
+      }
+      activeSourcesRef.current.forEach(s => {
+         try { s.stop(); } catch(e){}
+      });
+      activeSourcesRef.current = [];
+      clearInterval(checkSilenceIntervalRef.current);
+      if (callTimeoutRef.current) clearTimeout(callTimeoutRef.current);
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      setStatus("idle");
+      setMuted(false);
+      setAiSpeaking(false);
+      setUserSpeaking(false);
+
+      if (currentContactRef.current) {
+         await fireWebhook("term", currentContactRef.current);
+         fetch(`https://trigger.macrodroid.com/eaa342d0-a4df-4ee3-9850-cfbbc79248e3/end?${currentContactRef.current}`, { mode: 'no-cors' }).catch(err => console.error("Webhook failed", err));
+         currentContactRef.current = null;
+      }
+
+      if (bulkSessionActiveRef.current && currentQueueIndexRef.current >= 0 && currentQueueIndexRef.current < queueRef.current.length) {
+        if (triggerNext && currentQueueIndexRef.current + 1 < queueRef.current.length) {
+          const nextIdx = currentQueueIndexRef.current + 1;
+          setCurrentQueueIndex(nextIdx);
+          addLog("SYSTEM", `Preparing to dial next contact: ${queueRef.current[nextIdx]} in 3 seconds...`);
+          setTimeout(() => {
+             startCallInternal(queueRef.current[nextIdx]);
+          }, 3000);
+        } else if (triggerNext) {
+          addLog("SYSTEM", `Bulk calling queue finished.`);
+          setBulkSessionActive(false);
+        }
+      } else {
+         setBulkSessionActive(false);
+      }
+    } catch (err: any) {
+      console.error("Error in stopCall:", err);
     }
   };
 
+  const resetSilenceTimer = () => {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (!hasAiSpokenOnceRef.current) return;
+    
+    silenceTimerRef.current = setTimeout(() => {
+        addLog("SYSTEM", "Call ended due to 6 seconds of silence from the agent.");
+        stopCall(true);
+    }, 6000);
+  };
+
   const startCallInternal = async (contactInfo?: string) => {
+    hasAiSpokenOnceRef.current = false;
     const voiceName = localStorage.getItem("GEMINI_VOICE_NAME") || "Aoede";
 
     try {
       setStatus("connecting");
       setLogs([]);
       setError("");
+      aiVoiceBufferRef.current = "";
       
       if (contactInfo) {
          currentContactRef.current = contactInfo;
@@ -172,10 +202,11 @@ export default function DialerPage() {
       ws.onopen = async () => {
          setStatus("connected");
          addLog("SYSTEM", "AI Connection established. Waiting for user to speak...");
+         callStartTimeRef.current = Date.now();
          
          const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
          streamRef.current = stream;
-         
+
          const source = inputCtx.createMediaStreamSource(stream);
          const processor = inputCtx.createScriptProcessor(4096, 1, 1);
          source.connect(processor);
@@ -199,7 +230,14 @@ export default function DialerPage() {
          };
 
          checkSilenceIntervalRef.current = setInterval(() => {
-            if (userVolRef.current < 0.02) setUserSpeaking(false);
+            if (userVolRef.current < 0.02) {
+               setUserSpeaking(false);
+            }
+            
+            // If anyone is speaking (user or AI audio playing), reset the inactivity timer
+            if (userVolRef.current >= 0.02 || activeSourcesRef.current.length > 0) {
+               resetSilenceTimer();
+            }
          }, 500);
       };
 
@@ -212,6 +250,8 @@ export default function DialerPage() {
            return;
         }
         if (msg.audio) {
+            hasAiSpokenOnceRef.current = true;
+            resetSilenceTimer();
             setAiSpeaking(true);
             playAudioChunk(outputCtx, msg.audio);
             setTimeout(() => {
@@ -227,15 +267,40 @@ export default function DialerPage() {
             setAiSpeaking(false);
         }
         if (msg.type === "transcription") {
-           addLog(msg.role, msg.text);
+           addLog(msg.role, msg.text || "");
            if (msg.role === "AI" || msg.role === "ai" || msg.role === "model") {
-              const txt = msg.text.toLowerCase();
-              // Voice detector logic: recognize phrases where the AI states it is disconnecting
-              if (txt.includes("डिस्कनेक्ट") || txt.includes("disconnect") || txt.includes("hang up") || txt.includes("शुभ हो")) {
-                 addLog("SYSTEM", "[Voice Detector] Disconnect phrase recognized. Call will end after audio finishes playing.");
-                 const timeRemaining = Math.max(0, nextStartTimeRef.current - outputCtx.currentTime);
-                 const delayMs = (timeRemaining * 1000) + 1500; // wait for audio + small buffer
-                 setTimeout(() => stopCall(true), delayMs);
+              const txt = msg.text ? msg.text.toLowerCase() : "";
+              aiVoiceBufferRef.current += txt;
+              
+              const buffer = aiVoiceBufferRef.current;
+              // Normalize buffer to remove punctuation and collapse whitespace for accurate matching
+              const normalizedBuffer = buffer.replace(/[.,!?।"']/g, '').replace(/\s+/g, ' ').trim();
+              
+              // Only trigger on the specific, complete intentional phrases to prevent accidental disconnects
+              const disconnectPhrases = [
+                 "अब मैं इस call को disconnect कर रही हूँ",
+                 "अब मैं इस कॉल को डिस्कनेक्ट कर रही हूँ",
+                 "i am now disconnecting this call",
+                 "now we are disconnecting this call",
+                 "we are now disconnecting this call",
+                 "now i am disconnecting this call",
+                 "i am disconnecting this call",
+                 "disconnecting this call",
+                 "disconnecting the call"
+              ];
+              
+              const isDisconnect = disconnectPhrases.some(phrase => {
+                 const normalizedPhrase = phrase.toLowerCase().replace(/[.,!?।"']/g, '').replace(/\s+/g, ' ').trim();
+                 return normalizedBuffer.includes(normalizedPhrase);
+              });
+              
+              if (isDisconnect) {
+                 addLog("SYSTEM", "[Voice Detector] Disconnect phrase recognized. Terminating session in 5 seconds...");
+                 
+                 // Clear buffer so we don't trigger repeatedly
+                 aiVoiceBufferRef.current = "";
+                 
+                 setTimeout(() => stopCall(true), 5000);
               }
            }
         }
@@ -266,10 +331,8 @@ export default function DialerPage() {
            localStorage.setItem("LOCAL_BOOKINGS", JSON.stringify([newBooking, ...existing]));
         }
         if (msg.type === "end_call") {
-           addLog("SYSTEM", "The agent has ended the call securely.");
-           const timeRemaining = Math.max(0, nextStartTimeRef.current - outputCtx.currentTime);
-           const delayMs = (timeRemaining * 1000) + 1500;
-           setTimeout(() => stopCall(true), delayMs);
+           addLog("SYSTEM", "The agent has ended the call securely. Terminating session in 5 seconds...");
+           setTimeout(() => stopCall(true), 5000);
         }
       };
 
@@ -323,7 +386,9 @@ export default function DialerPage() {
     activeSourcesRef.current.push(source);
     source.onended = () => {
        activeSourcesRef.current = activeSourcesRef.current.filter(s => s !== source);
-       if (activeSourcesRef.current.length === 0) setAiSpeaking(false);
+       if (activeSourcesRef.current.length === 0) {
+           setAiSpeaking(false);
+       }
     };
   };
 
@@ -377,6 +442,22 @@ export default function DialerPage() {
         <div className="lg:col-span-1 border border-white/5 shadow-2xl flex flex-col items-center min-h-[500px] overflow-hidden rounded-2xl relative">
           <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-xl z-0"></div>
           
+          {/* Voice Detector Indicator */}
+          <div className={`absolute top-4 right-4 z-20 px-3 py-1.5 rounded-lg flex items-center gap-2 shadow-lg backdrop-blur-md transition-colors ${
+            status === "connected" 
+              ? "bg-emerald-500/10 border border-emerald-500/30" 
+              : "bg-slate-800/50 border border-slate-700"
+          }`}>
+             <div className={`w-2 h-2 rounded-full ${
+               status === "connected" ? "bg-emerald-500 animate-pulse" : "bg-slate-500"
+             }`}></div>
+             <span className={`text-xs font-semibold uppercase tracking-wider ${
+               status === "connected" ? "text-emerald-400" : "text-slate-400"
+             }`}>
+               Voice Detector: {status === "connected" ? "Active" : "Idle"}
+             </span>
+          </div>
+
           <div className="relative z-10 w-full p-8 flex flex-col items-center flex-1">
             <div className="relative mb-10 mt-6">
               <div className={`w-36 h-36 rounded-full flex items-center justify-center transition-all duration-700 ${
